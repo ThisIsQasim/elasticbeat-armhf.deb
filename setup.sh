@@ -2,6 +2,7 @@ BEAT=${1:-filebeat}
 VERSION=${2:-6.5.4}
 S3BUCKET=${3:-}
 BUILDPATH=/tmp/armbeat
+USEDOCKER=false
 
 function main(){
 
@@ -23,14 +24,14 @@ function main(){
 }
 
 function setup_builder(){
-    if [ "${BEAT}" == "packetbeat" ]; then
-        echo -e "You can download packetbeat from here.\nhttps://storage.cloud.google.com/beats-ci-artifacts/snapshots/packetbeat/packetbeat-oss-6.6.0-SNAPSHOT-armhf.deb"
-        exit 1
-    fi
-
     if [[ "${BEAT}" != "filebeat" && "${BEAT}" != "metricbeat" && "${BEAT}" != "heartbeat" ]]; then
-        echo "Not a valid beat name"
-        exit 1
+        if [[ "${BEAT}" == "packetbeat" ]]; then
+            USEDOCKER=true
+            echo -e "Building with docker"
+        else
+            echo "Not a valid beat name"
+            exit 1
+        fi
     fi
 
     if [ -d "${BUILDPATH}" ]; then
@@ -44,13 +45,17 @@ function setup_builder(){
 }
 
 function compile_beat(){
-    go get github.com/elastic/beats
-    cd ${GOPATH}/src/github.com/elastic/beats/
+    if [ "${USEDOCKER}" == "true" ]; then
+        docker_compile_beat
+    else
+        go get github.com/elastic/beats
+        cd ${GOPATH}/src/github.com/elastic/beats/
 
-    echo "Checking out version ${VERSION}"
-    git checkout -q v${VERSION} || ( echo "version not found" && exit 1 )
-    cd ${GOPATH}/src/github.com/elastic/beats/${BEAT}
-    make || ( echo "Build failed" && exit 1 )
+        echo "Checking out version ${VERSION}"
+        git checkout -q v${VERSION} || ( echo "version not found" && exit 1 )
+        cd ${GOPATH}/src/github.com/elastic/beats/${BEAT}
+        make || ( echo "Build failed" && exit 1 )
+    fi
 }
 
 function repackage_beat(){
@@ -85,12 +90,21 @@ function move_package(){
 
 function cleanup(){
     rm -rf ${BUILDPATH}
+    docker stop beat-builder
+    docker rm -f beat-builder
 }
 
 function check_deps(){
-    if [ -z "$(which go)" ]; then
-        echo "Go not installed! Please install go first"
-        exit 1
+    if [ "${USEDOCKER}" == "true" ]; then
+        if [ -z "$(which docker)" ]; then
+            echo "docker not installed! Please install Docker first"
+            exit 1
+        fi
+    else
+        if [ -z "$(which go)" ]; then
+            echo "Go not installed! Please install go first"
+            exit 1
+        fi
     fi
 
     if [ -z "$(which dpkg-deb)" ]; then
@@ -109,6 +123,38 @@ function check_deps(){
             exit 1
         fi
     fi    
+
+}
+
+function docker_compile_beat(){
+    if [ "${BEAT}" == "packetbeat" ]; then
+        cat > $GOPATH/buildscript << EOF
+dpkg --add-architecture armhf
+apt-get update
+apt-get install -y libc6-armel-cross libc6-dev-armel-cross binutils-arm-linux-gnueabi libncurses5-dev 
+apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+apt-get install -y libpcap0.8-dev:armhf
+export CC=arm-linux-gnueabihf-gcc CGO_ENABLED=1
+EOF
+    fi
+
+    cat >> $GOPATH/buildscript << EOF
+export GOARCH=arm
+go get github.com/elastic/beats
+cd /go/src/github.com/elastic/beats/
+
+echo "Checking out version ${VERSION}"
+git checkout -q v${VERSION} || ( echo "version not found" && exit 1 )
+cd /go/src/github.com/elastic/beats/${BEAT}
+make || ( echo "Build failed" && exit 1 )
+EOF
+
+    docker run --name beat-builder -v $GOPATH:/go -it golang:1.11.5-stretch bash /go/buildscript
+
+    if [ $? != 0 ]; then
+        echo "Docker run failed. Make sure you can spin up containers and selinux isn't messing around"
+        exit 1
+    fi
 }
 
 main
