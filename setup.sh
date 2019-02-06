@@ -2,6 +2,7 @@ BEAT=${1:-filebeat}
 VERSION=${2:-6.5.4}
 S3BUCKET=${3:-}
 BUILDPATH=/tmp/armbeat
+ARMARCH=armhf
 USEDOCKER=false
 
 function main(){
@@ -40,7 +41,16 @@ function setup_builder(){
     fi
 
     check_deps
-    export GOPATH=${BUILDPATH}/go GOARCH=arm GOARM=6
+
+    if [ "${ARMARCH}" == "armel" ]; then
+        ARMVERSION=6
+    elif [ "${ARMARCH}" == "armhf" ]; then
+        ARMVERSION=7
+    else
+        echo "Please specify a valid arm architecture"
+    fi
+
+    export GOPATH=${BUILDPATH}/go GOARCH=arm GOARM=$ARMVERSION
     mkdir -p ${GOPATH}
 }
 
@@ -48,7 +58,7 @@ function compile_beat(){
     if [ "${USEDOCKER}" == "true" ]; then
         docker_compile_beat
     else
-        go get github.com/elastic/beats
+        go get -v github.com/elastic/beats
         cd ${GOPATH}/src/github.com/elastic/beats/
 
         echo "Checking out version ${VERSION}"
@@ -66,15 +76,15 @@ function repackage_beat(){
     echo "unpacking amd64 package"
     alias cp=cp
     dpkg-deb -R ${BEAT}-oss-${VERSION}-amd64.deb deb
-    sed -i -e 's/amd64/armhf/g' deb/DEBIAN/control
+    sed -i -e "s/amd64/${ARMARCH}/g" deb/DEBIAN/control
     cp ${GOPATH}/src/github.com/elastic/beats/${BEAT}/${BEAT} deb/usr/share/${BEAT}/bin/${BEAT}
-    dpkg-deb -b deb ${BEAT}-oss-${VERSION}-armhf.deb
+    dpkg-deb -b deb ${BEAT}-oss-${VERSION}-${ARMARCH}.deb
 }
 
 function move_package(){
     if [ -n "${S3BUCKET}" ]; then
         SKIPMOVE=true
-        s3cmd put -P ${BUILDPATH}/${BEAT}-oss-${VERSION}-armhf.deb s3://${S3BUCKET}/${BEAT}/${BEAT}-oss-${VERSION}-armhf.deb ||\
+        s3cmd put -P ${BUILDPATH}/${BEAT}-oss-${VERSION}-${ARMARCH}.deb s3://${S3BUCKET}/${BEAT}/${BEAT}-oss-${VERSION}-${ARMARCH}.deb ||\
         ( SKIPMOVE=false && echo "S3 upload failed" )
     else
         SKIPMOVE=false
@@ -82,17 +92,19 @@ function move_package(){
     fi
 
     if [ "${SKIPMOVE}" != "true" ]; then
-        mv ${BUILDPATH}/${BEAT}-oss-${VERSION}-armhf.deb ~/
+        mv ${BUILDPATH}/${BEAT}-oss-${VERSION}-${ARMARCH}.deb ~/
         cd ~
-        echo "Find the package at $(pwd)/${BEAT}-oss-${VERSION}-armhf.deb"
+        echo "Find the package at $(pwd)/${BEAT}-oss-${VERSION}-${ARMARCH}.deb"
     fi
 }
 
 function cleanup(){
+    if [ "${USEDOCKER}" == "true" ]; then
+        docker stop beat-builder
+        docker rm -f beat-builder
+    fi
+
     rm -rf ${BUILDPATH}
-    docker stop beat-builder
-    docker rm -f beat-builder
-    docker rmi $(docker images -q -f dangling=true)
 }
 
 function check_deps(){
@@ -128,21 +140,9 @@ function check_deps(){
 }
 
 function docker_compile_beat(){
-    if [ "${BEAT}" == "packetbeat" ]; then
-        cat > $GOPATH/buildscript << EOF
-dpkg --add-architecture armhf
-apt-get update
-apt-get install -y libc6-armel-cross libc6-dev-armel-cross 
-#libncurses5-dev:armhf
-apt-get install -y binutils-arm-linux-gnueabihf gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
-apt-get install -y libpcap0.8-dev:armhf
-export CC=arm-linux-gnueabihf-gcc CGO_ENABLED=1
-EOF
-    fi
-
     cat >> $GOPATH/buildscript << EOF
-export GOARCH=arm GOARM=6
-go get github.com/elastic/beats
+export GOARCH=arm GOARM=${ARMVERSION}
+go get -v github.com/elastic/beats
 cd /go/src/github.com/elastic/beats/
 
 echo "Checking out version ${VERSION}"
@@ -151,7 +151,46 @@ cd /go/src/github.com/elastic/beats/${BEAT}
 make || ( echo "Build failed" && exit 1 )
 EOF
 
-    docker run --name beat-builder -v $GOPATH:/go -it golang:1.11.5-stretch bash /go/buildscript
+    if [ "${BEAT}" == "packetbeat" ]; then
+
+        if [ "${ARMARCH}" == "armel" ]; then
+            cat > $BUILDPATH/Dockerfile << EOF
+FROM golang:1.11.5-stretch
+RUN apt-get install -y libc6-armel-cross libc6-dev-armel-cross libncurses5-dev flex bison
+RUN apt-get install -y binutils-arm-linux-gnueabi gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
+RUN cd / &&\
+    curl -LO https://s3.amazonaws.com/beats-files/deps/libpcap-1.8.1.tar.gz &&\
+    tar xvf libpcap-1.8.1.tar.gz &&\
+    rm -f libpcap-1.8.1.tar.gz &&\
+    cd libpcap-1.8.1 &&\
+    export CC=arm-linux-gnueabi-gcc &&\
+    ./configure --host=arm-linux-gnueabi --with-pcap=linux --enable-usb=no --enable-bluetooth=no --enable-dbus=no &&\
+    make
+ENV CC=arm-linux-gnueabi-gcc CGO_ENABLED=1 CGO_LDFLAGS="-L/libpcap-1.8.1 -lpcap" CGO_CFLAGS="-I /libpcap-1.8.1"
+EOF
+        else
+            cat > $BUILDPATH/Dockerfile << EOF
+FROM golang:1.11.5-stretch
+RUN apt-get install -y libc6-armhf-cross libc6-dev-armhf-cross libncurses5-dev flex bison
+RUN apt-get install -y binutils-arm-linux-gnueabihf gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+RUN cd / &&\
+    curl -LO https://s3.amazonaws.com/beats-files/deps/libpcap-1.8.1.tar.gz &&\
+    tar xvf libpcap-1.8.1.tar.gz &&\
+    rm -f libpcap-1.8.1.tar.gz &&\
+    cd libpcap-1.8.1 &&\
+    export CC=arm-linux-gnueabihf-gcc &&\
+    ./configure --host=arm-linux-gnueabihf --with-pcap=linux --enable-usb=no --enable-bluetooth=no --enable-dbus=no &&\
+    make
+ENV CC=arm-linux-gnueabihf-gcc CGO_ENABLED=1 CGO_LDFLAGS="-L/libpcap-1.8.1 -lpcap" CGO_CFLAGS="-I /libpcap-1.8.1"
+EOF
+        fi
+
+        docker build -t packetbeat-builder-${ARMARCH} $BUILDPATH
+        docker run --name beat-builder -v $GOPATH:/go -it packetbeat-builder-${ARMARCH} bash /go/buildscript
+
+    else
+        docker run --name beat-builder -v $GOPATH:/go -it golang:1.11.5-stretch bash /go/buildscript
+    fi
 
     if [ $? != 0 ]; then
         echo "Docker run failed. Make sure you can spin up containers and selinux isn't messing around"
