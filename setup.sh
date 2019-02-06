@@ -35,12 +35,12 @@ function setup_builder(){
     fi
 
     if [ -d "${BUILDPATH}" ]; then
-        echo "Build path already exists. Clean it up or specify an empty path"
+        echo "Build path at ${BUILDPATH} already exists. Clean it up or specify an empty path"
         exit 1
     fi
 
     check_deps
-    export GOPATH=${BUILDPATH}/go GOARCH=arm
+    export GOPATH=${BUILDPATH}/go GOARCH=arm GOARM=6
     mkdir -p ${GOPATH}
 }
 
@@ -92,6 +92,7 @@ function cleanup(){
     rm -rf ${BUILDPATH}
     docker stop beat-builder
     docker rm -f beat-builder
+    docker rmi $(docker images -q -f dangling=true)
 }
 
 function check_deps(){
@@ -131,15 +132,16 @@ function docker_compile_beat(){
         cat > $GOPATH/buildscript << EOF
 dpkg --add-architecture armhf
 apt-get update
-apt-get install -y libc6-armel-cross libc6-dev-armel-cross binutils-arm-linux-gnueabi libncurses5-dev 
-apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+apt-get install -y libc6-armel-cross libc6-dev-armel-cross 
+#libncurses5-dev:armhf
+apt-get install -y binutils-arm-linux-gnueabihf gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
 apt-get install -y libpcap0.8-dev:armhf
 export CC=arm-linux-gnueabihf-gcc CGO_ENABLED=1
 EOF
     fi
 
     cat >> $GOPATH/buildscript << EOF
-export GOARCH=arm
+export GOARCH=arm GOARM=6
 go get github.com/elastic/beats
 cd /go/src/github.com/elastic/beats/
 
