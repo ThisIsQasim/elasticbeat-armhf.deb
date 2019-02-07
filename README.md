@@ -7,4 +7,4 @@ This script works fine on Debian, Ubuntu, CentOS, Fedora and RedHat OSes with go
     ./setup.sh filebeat 6.5.4
 
 
-Note: Golang-11 or docker is required to compile binary except packetbeat which can only be compiled via docker. dpkg is required to package .deb file (on CentOS/RHEL it is available in the epel repo `yum install -y epel-release`).
+Note: Golang-11 or docker is required to compile binary except packetbeat which can only be compiled via docker. dpkg is required to package .deb file (on CentOS/RHEL it is available in the epel repo `yum install -y epel-release`). Use armel packages for Raspberry Pi one.
