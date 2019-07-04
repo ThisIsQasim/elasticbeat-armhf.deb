@@ -1,5 +1,5 @@
 BEAT=${1:-filebeat}
-VERSION=${2:-6.5.4}
+VERSION=${2:-7.2.0}
 S3BUCKET=${3:-}
 BUILDPATH=/tmp/armbeat
 ARMARCH=armhf
@@ -156,6 +156,7 @@ EOF
         if [ "${ARMARCH}" == "armel" ]; then
             cat > $BUILDPATH/Dockerfile << EOF
 FROM golang:1.11.5-stretch
+RUN apt-get update 
 RUN apt-get install -y libc6-armel-cross libc6-dev-armel-cross libncurses5-dev flex bison
 RUN apt-get install -y binutils-arm-linux-gnueabi gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
 RUN cd / &&\
@@ -171,6 +172,7 @@ EOF
         else
             cat > $BUILDPATH/Dockerfile << EOF
 FROM golang:1.11.5-stretch
+RUN apt-get update 
 RUN apt-get install -y libc6-armhf-cross libc6-dev-armhf-cross libncurses5-dev flex bison
 RUN apt-get install -y binutils-arm-linux-gnueabihf gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
 RUN cd / &&\
